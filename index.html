@@ -572,7 +572,7 @@ details summary {
   </div>
 </div>
 
-<div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; font-size: 12px; color: var(--text-secondary);">
+<div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; font-size: 14px; color: var(--text-secondary);">
   <select id="best-of" style="width: auto; padding: 8px 10px; font-size: 14px;">
     <option value="1" selected>1セット</option>
     <option value="3">3セット</option>
@@ -581,11 +581,13 @@ details summary {
     <option value="practice6">練習6ゲーム</option>
     <option value="practice8">練習8ゲーム</option>
   </select>
+  <select id="deuce-mode" style="width: auto; padding: 8px 10px; font-size: 14px;">
+    <option value="ad">通常アド</option>
+    <option value="semi">セミアド</option>
+    <option value="no" selected>ノーアド</option>
+  </select>
   <label style="display: flex; align-items: center; gap: 4px;">
     <input type="checkbox" id="tiebreak-on" checked> タイブレーク
-  </label>
-  <label style="display: flex; align-items: center; gap: 4px;">
-    <input type="checkbox" id="no-ad" checked> ノーアド
   </label>
 </div>
 
@@ -724,10 +726,15 @@ function freshState() {
     server: null,
     tiebreak: false,
     tbPoints: { p1: 0, p2: 0 },
+    deuceCount: 0,  // セミアド用: 現在のゲームでデュースになった回数
     matchOver: false,
     winner: null,
     log: []
   };
+}
+
+function deuceMode() {
+  return getValue('deuce-mode'); // 'ad' / 'semi' / 'no'
 }
 
 function teamName(team) {
@@ -828,9 +835,26 @@ function addPoint(player) {
   }
 
   me.points++;
-  if (getChecked('no-ad')) {
+  const dm = deuceMode();
+
+  if (dm === 'no') {
+    // ノーアド: 3-3になったら次の1ポイントで決着
     if (me.points >= 4 && me.points > opp.points) winGame(player);
+  } else if (dm === 'semi') {
+    // セミアド: 1回目のデュースまでは通常通り、2回目のデュース以降は次の1ポイントで決着
+    // デュースになったタイミングをカウント
+    if (me.points >= 3 && me.points === opp.points) {
+      state.deuceCount++;
+    }
+    if (state.deuceCount >= 2) {
+      // 2回目以降のデュース: ノーアド方式
+      if (me.points >= 4 && me.points > opp.points) winGame(player);
+    } else {
+      // 通常アド方式
+      if (me.points >= 4 && me.points - opp.points >= 2) winGame(player);
+    }
   } else {
+    // 通常アド: 2ポイント差で勝利
     if (me.points >= 4 && me.points - opp.points >= 2) winGame(player);
   }
 }
@@ -841,6 +865,7 @@ function winGame(player) {
   me.games++;
   me.points = 0;
   opp.points = 0;
+  state.deuceCount = 0;  // 次のゲームのためリセット
   rotateServer();
 
   // 練習モード: 指定ゲーム数を消化したら試合終了
@@ -931,8 +956,18 @@ function rebuildFromLog() {
       }
     } else {
       me.points++;
-      if (getChecked('no-ad')) {
+      const dm = deuceMode();
+      if (dm === 'no') {
         if (me.points >= 4 && me.points > opp.points) winGame(p.winner);
+      } else if (dm === 'semi') {
+        if (me.points >= 3 && me.points === opp.points) {
+          state.deuceCount++;
+        }
+        if (state.deuceCount >= 2) {
+          if (me.points >= 4 && me.points > opp.points) winGame(p.winner);
+        } else {
+          if (me.points >= 4 && me.points - opp.points >= 2) winGame(p.winner);
+        }
       } else {
         if (me.points >= 4 && me.points - opp.points >= 2) winGame(p.winner);
       }
@@ -943,10 +978,20 @@ function rebuildFromLog() {
 function pointDisplay(player) {
   if (state.tiebreak) return state.tbPoints[player].toString();
   const me = state[player], opp = state[player === 'p1' ? 'p2' : 'p1'];
-  if (getChecked('no-ad')) {
+  const dm = deuceMode();
+
+  if (dm === 'no') {
     if (me.points <= 3 && opp.points <= 3) return POINTS[me.points];
     return me.points.toString();
   }
+
+  // セミアドで2回目のデュース以降はノーアド表示
+  if (dm === 'semi' && state.deuceCount >= 2) {
+    if (me.points <= 3 && opp.points <= 3) return POINTS[me.points];
+    return me.points.toString();
+  }
+
+  // 通常アド or セミアドの1回目のデュースまで
   if (me.points <= 3 && opp.points <= 3) return POINTS[me.points];
   if (me.points === opp.points) return '40';
   if (me.points === opp.points + 1) return 'Ad';
@@ -968,13 +1013,29 @@ function statusText() {
   }
   if (state.tiebreak) parts.push('タイブレーク');
   const m1 = state.p1.points, m2 = state.p2.points;
-  if (!state.tiebreak && !getChecked('no-ad')) {
-    if (m1 >= 3 && m2 >= 3 && m1 === m2) parts.push('デュース');
-    else if (m1 >= 3 && m2 >= 3 && Math.abs(m1 - m2) === 1) {
-      parts.push('Ad ' + teamName(m1 > m2 ? 'p1' : 'p2'));
+  const dm = deuceMode();
+
+  if (!state.tiebreak) {
+    // セミアド: 2回目のデュース以降はノーアド表示
+    if (dm === 'semi' && state.deuceCount >= 2 && m1 === 3 && m2 === 3) {
+      parts.push('決定P（セミアド）');
+    } else if (dm === 'no' && m1 === 3 && m2 === 3) {
+      parts.push('決定P');
+    } else if (dm !== 'no' && m1 >= 3 && m2 >= 3) {
+      // 通常アド or セミアドの1回目まで
+      if (m1 === m2) {
+        if (dm === 'semi' && state.deuceCount >= 2) {
+          parts.push('2回目デュース → 決定P');
+        } else if (dm === 'semi' && state.deuceCount === 1) {
+          parts.push('デュース（次アドで決着or再デュース）');
+        } else {
+          parts.push('デュース');
+        }
+      } else if (Math.abs(m1 - m2) === 1) {
+        parts.push('Ad ' + teamName(m1 > m2 ? 'p1' : 'p2'));
+      }
     }
   }
-  if (getChecked('no-ad') && state.p1.points === 3 && state.p2.points === 3) parts.push('決定P');
   parts.push('サーブ: ' + serverName(state.server));
   return parts.join(' · ');
 }
